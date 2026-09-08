@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Starblast MRP Lumen - Local Cosmetics
 // @namespace    local.starblast.mrp
-// @version      1.0.0
-// @description  Live hull colors, rim lighting, patterned laser sprites, and a personal MRP badge. Local visuals only.
+// @version      2.0.0
+// @description  Subtle hull recolor with thin ECP-style stripes, zigzag patterned laser sprites, and a personal MRP badge. Local visuals only.
 // @match        https://starblast.io/*
 // @match        https://www.starblast.io/*
 // @run-at       document-end
@@ -19,27 +19,43 @@
   // It never changes entitlements, network traffic, weapons, movement, or game settings.
   const KEY = '__MRP_LUMEN_LOCAL_V1__';
   const STORAGE = 'mrp.lumen.cosmetics.v1';
-  if (window[KEY]?.dispose) window[KEY].dispose();
+  const VERSION = '2.0.0';
+  // Single-instance guard: dispose an older copy before this one builds anything.
+  if (window[KEY]?.dispose) { try { window[KEY].dispose(); } catch { /* older copy already gone */ } }
 
   const DEFAULTS = Object.freeze({
-    enabled: true, ship: true, lasers: true, badge: true,
-    hull: '#65d9ff', rim: '#a18cff', shot: '#69efff', accent: '#f3aaff',
-    tint: 0.62, glow: 0.75, expansion: 0.055, pulse: 0.65,
-    pulseDepth: 0.18, pattern: 'crescent', shotTint: 0.75,
-    patternStrength: 0.72, bandWidth: 0.08, animation: 0.8,
+    enabled: true, ship: true, lasers: true, badge: true, stripes: true, rimEnabled: false,
+    hull: '#65d9ff', trim: '#ffe9a8', rim: '#a18cff', shot: '#69efff', accent: '#f3aaff',
+    tint: 0.45, pulse: 0.65, pulseDepth: 0.12,
+    stripeDensity: 7, stripeWidth: 0.14, stripeOpacity: 0.55, stripeFlow: 0, stripeAxis: 'auto',
+    glow: 0.6, expansion: 0.04,
+    pattern: 'zigzag', shotTint: 0.7, patternStrength: 0.72, bandWidth: 0.08, animation: 0.8,
     scope: 'own', reduceMotion: false,
   });
   const BOUNDS = {
-    tint: [0, 1], glow: [0, 1.5], expansion: [0, 0.12], pulse: [0, 2],
-    pulseDepth: [0, 0.4], shotTint: [0, 1], patternStrength: [0, 1],
-    bandWidth: [0.035, 0.2], animation: [0, 2],
+    tint: [0, 1], pulse: [0, 2], pulseDepth: [0, 0.4],
+    stripeDensity: [1, 24], stripeWidth: [0.02, 0.6], stripeOpacity: [0, 1], stripeFlow: [0, 2],
+    glow: [0, 1.5], expansion: [0, 0.12],
+    shotTint: [0, 1], patternStrength: [0, 1], bandWidth: [0.035, 0.2], animation: [0, 2],
   };
-  const PATTERNS = ['native', 'plasma', 'crescent', 'helix', 'prism'];
+  const COLOR_KEYS = ['hull', 'trim', 'rim', 'shot', 'accent'];
+  // Index order matters: it is the value handed to the fragment shader.
+  const PATTERNS = ['zigzag', 'chevron', 'crescent', 'helix', 'prism', 'plasma', 'native'];
+  const PATTERN_LABELS = {
+    zigzag: 'Zigzag stripes (default)',
+    chevron: 'Chevron dashes',
+    crescent: 'Twin curves',
+    helix: 'Helix filaments',
+    prism: 'Prism cut',
+    plasma: 'Plasma core',
+    native: 'Original sprite + tint only',
+  };
+  const AXES = { auto: 'Auto (longest axis)', x: 'Model X', y: 'Model Y', z: 'Model Z' };
   const BUILTINS = {
-    Aurora: { hull: '#65d9ff', rim: '#a18cff', shot: '#69efff', accent: '#f3aaff', pattern: 'crescent' },
-    Solar: { hull: '#ffd577', rim: '#ff844d', shot: '#ffcb69', accent: '#fff5c4', pattern: 'plasma' },
-    Amethyst: { hull: '#c39bff', rim: '#f18cda', shot: '#c3a4ff', accent: '#ff96d4', pattern: 'helix' },
-    Glacier: { hull: '#b5efff', rim: '#79b7ff', shot: '#b5f5ff', accent: '#ffffff', pattern: 'prism' },
+    Aurora: { hull: '#65d9ff', trim: '#ffe9a8', rim: '#a18cff', shot: '#69efff', accent: '#f3aaff', pattern: 'zigzag' },
+    Solar: { hull: '#ffd577', trim: '#fff5c4', rim: '#ff844d', shot: '#ffcb69', accent: '#fff5c4', pattern: 'chevron' },
+    Amethyst: { hull: '#c39bff', trim: '#ffd7f4', rim: '#f18cda', shot: '#c3a4ff', accent: '#ff96d4', pattern: 'helix' },
+    Glacier: { hull: '#b5efff', trim: '#ffffff', rim: '#79b7ff', shot: '#b5f5ff', accent: '#ffffff', pattern: 'prism' },
   };
   const BADGE = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-label="MRP personal emblem">
     <defs><linearGradient id="mrp-metal" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff1bf"/><stop offset=".5" stop-color="#dcb971"/><stop offset="1" stop-color="#997041"/></linearGradient></defs>
@@ -61,9 +77,10 @@
       if (typeof fallback === 'boolean' && typeof item === 'boolean') output[key] = item;
       else if (BOUNDS[key] && typeof item === 'number' && Number.isFinite(item)) {
         output[key] = Math.min(BOUNDS[key][1], Math.max(BOUNDS[key][0], item));
-      } else if (['hull', 'rim', 'shot', 'accent'].includes(key) && typeof item === 'string' && /^#[\da-f]{6}$/i.test(item)) {
+      } else if (COLOR_KEYS.includes(key) && typeof item === 'string' && /^#[\da-f]{6}$/i.test(item)) {
         output[key] = item;
       } else if (key === 'pattern' && PATTERNS.includes(item)) output[key] = item;
+      else if (key === 'stripeAxis' && Object.hasOwn(AXES, item)) output[key] = item;
       else if (key === 'scope' && ['own', 'visible'].includes(item)) output[key] = item;
     }
     return output;
@@ -73,7 +90,9 @@
   let storageWarning = '';
   try { stored = JSON.parse(localStorage.getItem(STORAGE) || 'null'); } catch { stored = null; }
   let settings = sanitize(stored?.settings);
-  if (!stored && window.matchMedia('(prefers-reduced-motion: reduce)').matches) settings.reduceMotion = true;
+  let prefersCalm = false;
+  try { prefersCalm = Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches); } catch { prefersCalm = false; }
+  if (!stored && prefersCalm) settings.reduceMotion = true;
   let customs = Array.isArray(stored?.presets) ? stored.presets.slice(0, 8)
     .filter(p => p && typeof p.name === 'string')
     .map(p => ({ name: p.name.slice(0, 28), settings: sanitize(p.settings) })) : [];
@@ -83,9 +102,10 @@
   let fault = '';
   let installed = null;
   let saveTimer = 0;
+  let toastTimer = 0;
   let ui = null;
-  let previewFrame = 0;
-  let lastPreview = 0;
+  let swatchFrame = 0;
+  let lastSwatch = 0;
   let lastDraw = 0;
   let lastShipDraw = 0;
   let ownEmissions = 0;
@@ -94,6 +114,7 @@
   const renderers = new Map();
   const heldOutsideUI = new Set();
   const passKeyReleases = new WeakSet();
+  const handledKeys = new WeakSet();
   const heldMouseButtons = new Set();
   const heldPointers = new Set();
   const passPointerReleases = new WeakSet();
@@ -138,6 +159,8 @@
     return { T, view, scene, camera, renderer, points, material, geometry, size };
   }
 
+  // Everything below is painted INSIDE the native particle sprite.
+  // Position, velocity, lifetime, point size, depth and alpha stay exactly as the game set them.
   const LASER_FRAGMENT = `
     uniform vec3 mrpShotColor;
     uniform vec3 mrpAccentColor;
@@ -154,27 +177,78 @@
       vec4 nativePixel = gl_FragColor;
       vec2 q = (gl_PointCoord - .5) * 2.0;
       q = vec2(q.x*co+q.y*si, q.x*si-q.y*co);
+      float soft = mrpWidth + .07;
+      float fade = 1.0 - smoothstep(.55, 1.05, length(q));
       float detail = 0.0;
-      if (mrpPattern > .5 && mrpPattern < 1.5) {
-        detail = exp(-dot(q,q)*5.0) * (.8+.2*cos(mrpClock*3.0));
-      } else if (mrpPattern < 2.5 && mrpPattern > 1.5) {
-        float arcA = abs(length(q-vec2(.0,.24))-.54);
-        float arcB = abs(length(q+vec2(.0,.24))-.54);
-        detail = (1.0-smoothstep(mrpWidth,mrpWidth+.08,min(arcA,arcB))) * (1.0-smoothstep(.15,1.0,abs(q.x)));
-      } else if (mrpPattern < 3.5 && mrpPattern > 2.5) {
-        float wave = sin(q.x*6.5-mrpClock*3.0)*.32;
-        float thread = min(abs(q.y-wave),abs(q.y+wave));
-        detail = 1.0-smoothstep(mrpWidth,mrpWidth+.08,thread);
-      } else if (mrpPattern > 3.5) {
-        float diamond = abs(abs(q.x)+abs(q.y)-.6);
-        detail = 1.0-smoothstep(mrpWidth,mrpWidth+.08,diamond);
+      if (mrpPattern < .5) {
+        // zigzag: small stripes running along the bolt, like an ECP trim.
+        float tri = abs(fract(q.x * 2.2 - mrpClock * .55) * 2.0 - 1.0) * .62 - .31;
+        detail = 1.0 - smoothstep(mrpWidth, soft, abs(q.y - tri));
+        float rung = abs(fract(q.x * 4.4 - mrpClock * .55) - .5);
+        detail = max(detail, (1.0 - smoothstep(mrpWidth * .6, mrpWidth * .6 + .05, rung)) * (1.0 - smoothstep(.18, .5, abs(q.y))) * .7);
+      } else if (mrpPattern < 1.5) {
+        // chevron dashes
+        float d = abs(fract(q.x * 2.6 - mrpClock * .7 + abs(q.y) * .9) - .5);
+        detail = (1.0 - smoothstep(mrpWidth * .8, mrpWidth * .8 + .06, d)) * (1.0 - smoothstep(.2, .78, abs(q.y)));
+      } else if (mrpPattern < 2.5) {
+        float arcA = abs(length(q - vec2(.0, .24)) - .54);
+        float arcB = abs(length(q + vec2(.0, .24)) - .54);
+        detail = (1.0 - smoothstep(mrpWidth, soft, min(arcA, arcB))) * (1.0 - smoothstep(.15, 1.0, abs(q.x)));
+      } else if (mrpPattern < 3.5) {
+        float wave = sin(q.x * 6.5 - mrpClock * 3.0) * .32;
+        float thread = min(abs(q.y - wave), abs(q.y + wave));
+        detail = 1.0 - smoothstep(mrpWidth, soft, thread);
+      } else if (mrpPattern < 4.5) {
+        float diamond = abs(abs(q.x) + abs(q.y) - .6);
+        detail = 1.0 - smoothstep(mrpWidth, soft, diamond);
+      } else if (mrpPattern < 5.5) {
+        detail = exp(-dot(q, q) * 5.0) * (.8 + .2 * cos(mrpClock * 3.0));
       }
-      vec3 tint = mix(vec3(1.0),mrpShotColor*1.45+.15,mrpTint);
-      vec3 decorative = mrpAccentColor*detail*mrpStrength*nativePixel.a*.8;
+      detail *= fade;
+      vec3 tint = mix(vec3(1.0), mrpShotColor * 1.45 + .15, mrpTint);
+      vec3 decorative = mrpAccentColor * detail * mrpStrength * nativePixel.a * .8;
       // Native alpha, point size, depth, position and lifetime are not changed.
-      gl_FragColor = vec4(nativePixel.rgb*tint+decorative,nativePixel.a);
+      gl_FragColor = vec4(nativePixel.rgb * tint + decorative, nativePixel.a);
     }
   `;
+
+  // Thin painted stripes on the EXISTING hull mesh. No new geometry is created:
+  // the overlay reuses the game's own hull geometry and is removed after every frame.
+  const STRIPE_VERTEX = `
+    uniform vec3 mrpAxis;
+    uniform float mrpMin;
+    uniform float mrpSpan;
+    varying float mrpT;
+    varying vec3 mrpNormalV;
+    varying vec3 mrpViewV;
+    void main() {
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      mrpT = (dot(position, mrpAxis) - mrpMin) / mrpSpan;
+      mrpNormalV = normalize(normalMatrix * normal);
+      mrpViewV = -mv.xyz;
+      gl_Position = projectionMatrix * mv;
+    }`;
+  const STRIPE_FRAGMENT = `
+    uniform vec3 mrpTrim;
+    uniform float mrpCount;
+    uniform float mrpStripeWidth;
+    uniform float mrpOpacity;
+    uniform float mrpFlow;
+    uniform float mrpClock;
+    varying float mrpT;
+    varying vec3 mrpNormalV;
+    varying vec3 mrpViewV;
+    void main() {
+      float s = fract(mrpT * mrpCount - mrpClock * mrpFlow);
+      float d = abs(s - .5);
+      float half_w = clamp(mrpStripeWidth, .01, .48) * .5;
+      float line = 1.0 - smoothstep(half_w, half_w + .045, d);
+      float face = abs(dot(normalize(mrpNormalV), normalize(mrpViewV)));
+      float ends = smoothstep(.0, .10, mrpT) * smoothstep(.0, .10, 1.0 - mrpT);
+      float alpha = line * ends * mrpOpacity * (.35 + .65 * face);
+      if (alpha <= .002) discard;
+      gl_FragColor = vec4(mrpTrim, alpha);
+    }`;
 
   function localIdentity(view) {
     const id = view?.I0lO1?.status?.id;
@@ -258,8 +332,10 @@
     const r = state.hullResources;
     if (!r) return;
     if (r.glowMesh.parent) r.glowMesh.parent.remove(r.glowMesh);
+    if (r.stripeMesh.parent) r.stripeMesh.parent.remove(r.stripeMesh);
     r.tintMaterial.dispose();
     r.glowMaterial.dispose();
+    r.stripeMaterial.dispose();
     // Geometry and maps belong to Starblast; never dispose them here.
     state.hullResources = null;
   }
@@ -316,6 +392,39 @@
       `${key}:${material[key].encoding}:${material[key].mapping}` : '')).join('|');
   }
 
+  // Reads the model extents without mutating game-owned geometry (r85 hulls are THREE.Geometry).
+  function localBounds(geometry) {
+    const min = [Infinity, Infinity, Infinity];
+    const max = [-Infinity, -Infinity, -Infinity];
+    const take = (x, y, z) => {
+      const v = [x, y, z];
+      for (let a = 0; a < 3; a++) {
+        if (!Number.isFinite(v[a])) return;
+        if (v[a] < min[a]) min[a] = v[a];
+        if (v[a] > max[a]) max[a] = v[a];
+      }
+    };
+    if (Array.isArray(geometry.vertices) && geometry.vertices.length) {
+      const list = geometry.vertices;
+      const limit = Math.min(list.length, 200000);
+      for (let i = 0; i < limit; i++) take(list[i].x, list[i].y, list[i].z);
+    } else if (geometry.attributes?.position?.array) {
+      const array = geometry.attributes.position.array;
+      const limit = Math.min(array.length, 600000);
+      for (let i = 0; i + 2 < limit; i += 3) take(array[i], array[i + 1], array[i + 2]);
+    } else return null;
+    if (!Number.isFinite(min[0]) || !Number.isFinite(max[0])) return null;
+    return { min, max };
+  }
+
+  function stripeAxisSetup(bounds, choice) {
+    const spans = [bounds.max[0] - bounds.min[0], bounds.max[1] - bounds.min[1], bounds.max[2] - bounds.min[2]];
+    let index = { x: 0, y: 1, z: 2 }[choice];
+    if (index === undefined) index = spans.indexOf(Math.max(...spans));
+    if (index < 0) index = 0;
+    return { index, min: bounds.min[index], span: Math.max(spans[index], 1e-4) };
+  }
+
   function prepareShip(state, restore) {
     const { T, view, scene } = state;
     const hull = view.ship?.Ol110;
@@ -333,6 +442,7 @@
       r = null;
     }
     if (!r) {
+      // The native material is cloned and tinted; the game's own material object is never edited.
       const tintMaterial = nativeMaterial.clone();
       const glowMaterial = new T.ShaderMaterial({
         uniforms: { mrpRim: { value: new T.Color() }, mrpGlow: { value: 0 }, mrpExpansion: { value: 0 } },
@@ -354,9 +464,25 @@
           }`,
         side: T.BackSide, transparent: true, depthTest: true, depthWrite: false, blending: T.AdditiveBlending,
       });
+      const stripeMaterial = new T.ShaderMaterial({
+        uniforms: {
+          mrpTrim: { value: new T.Color() }, mrpCount: { value: 7 }, mrpStripeWidth: { value: .14 },
+          mrpOpacity: { value: 0 }, mrpFlow: { value: 0 }, mrpClock: { value: 0 },
+          mrpAxis: { value: new T.Vector3(1, 0, 0) }, mrpMin: { value: 0 }, mrpSpan: { value: 1 },
+        },
+        vertexShader: STRIPE_VERTEX,
+        fragmentShader: STRIPE_FRAGMENT,
+        side: T.FrontSide, transparent: true, depthTest: true, depthWrite: false,
+        polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+      });
+      // Both overlays REUSE the game's hull geometry. No ship model is generated.
       const glowMesh = new T.Mesh(hull.geometry, glowMaterial);
+      const stripeMesh = new T.Mesh(hull.geometry, stripeMaterial);
+      stripeMesh.renderOrder = (hull.renderOrder || 0) + 1;
       r = { hull, geometry: hull.geometry, source: nativeMaterial, tintMaterial, glowMaterial, glowMesh,
-        color: new T.Color(), white: new T.Color(0xffffff), key: materialKey(nativeMaterial), glowReady: null };
+        stripeMaterial, stripeMesh, color: new T.Color(), white: new T.Color(0xffffff),
+        key: materialKey(nativeMaterial), glowReady: null, stripeReady: null,
+        bounds: localBounds(hull.geometry), axisKey: null };
       state.hullResources = r;
     }
     r.tintMaterial.copy(nativeMaterial);
@@ -365,21 +491,51 @@
       r.tintMaterial.needsUpdate = true;
       r.key = nextKey;
     }
+    const pulse = 1 + Math.sin(clock() * Math.PI * 2 * settings.pulse) * settings.pulseDepth;
+    // Subtle multiply tint of the native color: the model, textures and opacity stay native.
     r.color.set(settings.hull);
     r.color.lerp(r.white, 1 - settings.tint);
     r.tintMaterial.color.multiply(r.color);
-    const pulse = 1 + Math.sin(clock() * Math.PI * 2 * settings.pulse) * settings.pulseDepth;
     const glow = settings.glow * pulse;
-    if (r.tintMaterial.emissive) r.tintMaterial.emissive.lerp(r.color.set(settings.rim), Math.min(.55, glow * .25));
-    r.glowMaterial.uniforms.mrpRim.value.set(settings.rim);
-    r.glowMaterial.uniforms.mrpGlow.value = glow * Math.max(0, Math.min(1, nativeMaterial.opacity));
-    r.glowMaterial.uniforms.mrpExpansion.value = settings.expansion;
+    if (r.tintMaterial.emissive) {
+      if (settings.rimEnabled) r.tintMaterial.emissive.lerp(r.color.set(settings.rim), Math.min(.55, glow * .25));
+      else r.tintMaterial.emissive.lerp(r.color.set(settings.hull), Math.min(.3, settings.tint * .18 * pulse));
+    }
     hull.material = r.tintMaterial;
     restore.push(() => { if (hull.material === r.tintMaterial) hull.material = nativeMaterial; });
-    if (r.glowReady === null) r.glowReady = compileEffect(state, r.glowMaterial, hull.geometry, 'mesh');
-    if (glow > 0 && settings.expansion > 0 && r.glowReady) {
-      hull.add(r.glowMesh);
-      restore.push(() => hull.remove(r.glowMesh));
+
+    if (settings.stripes && settings.stripeOpacity > 0 && r.bounds) {
+      const axisKey = settings.stripeAxis;
+      if (r.axisKey !== axisKey) {
+        const setup = stripeAxisSetup(r.bounds, axisKey);
+        r.stripeMaterial.uniforms.mrpAxis.value.set(setup.index === 0 ? 1 : 0, setup.index === 1 ? 1 : 0, setup.index === 2 ? 1 : 0);
+        r.stripeMaterial.uniforms.mrpMin.value = setup.min;
+        r.stripeMaterial.uniforms.mrpSpan.value = setup.span;
+        r.axisKey = axisKey;
+      }
+      const u = r.stripeMaterial.uniforms;
+      u.mrpTrim.value.set(settings.trim);
+      u.mrpCount.value = Math.max(1, Math.round(settings.stripeDensity));
+      u.mrpStripeWidth.value = settings.stripeWidth;
+      u.mrpOpacity.value = settings.stripeOpacity * Math.max(0, Math.min(1, nativeMaterial.opacity)) * pulse;
+      u.mrpFlow.value = settings.stripeFlow;
+      u.mrpClock.value = clock();
+      if (r.stripeReady === null) r.stripeReady = compileEffect(state, r.stripeMaterial, hull.geometry, 'mesh');
+      if (r.stripeReady) {
+        hull.add(r.stripeMesh);
+        restore.push(() => hull.remove(r.stripeMesh));
+      }
+    }
+
+    if (settings.rimEnabled) {
+      r.glowMaterial.uniforms.mrpRim.value.set(settings.rim);
+      r.glowMaterial.uniforms.mrpGlow.value = glow * Math.max(0, Math.min(1, nativeMaterial.opacity));
+      r.glowMaterial.uniforms.mrpExpansion.value = settings.expansion;
+      if (r.glowReady === null) r.glowReady = compileEffect(state, r.glowMaterial, hull.geometry, 'mesh');
+      if (glow > 0 && settings.expansion > 0 && r.glowReady) {
+        hull.add(r.glowMesh);
+        restore.push(() => hull.remove(r.glowMesh));
+      }
     }
     lastShipDraw = performance.now();
   }
@@ -425,7 +581,9 @@
           s.maskAttribute.needsUpdate = true;
           if (s.hullResources) {
             s.hullResources.glowReady = null;
+            s.hullResources.stripeReady = null;
             s.hullResources.glowMaterial.needsUpdate = true;
+            s.hullResources.stripeMaterial.needsUpdate = true;
             s.hullResources.tintMaterial.needsUpdate = true;
           }
         }
@@ -506,102 +664,301 @@
     lastDraw = lastShipDraw = ownEmissions = 0;
   }
 
-  const COLORS = [['hull', 'Hull finish'], ['rim', 'Rim lighting'], ['shot', 'Laser body'], ['accent', 'Laser detail']];
+  /* ------------------------------------------------------------------ UI */
+
+  const COLORS = {
+    hull: 'Hull finish', trim: 'Stripe colour', rim: 'Rim lighting',
+    shot: 'Laser body', accent: 'Laser detail',
+  };
+  const FORMATS = {
+    tint: 'pct', pulse: 'hz', pulseDepth: 'pct',
+    stripeDensity: 'lines', stripeWidth: 'pct', stripeOpacity: 'pct', stripeFlow: 'x',
+    glow: 'pct', expansion: 'pct',
+    shotTint: 'pct', patternStrength: 'pct', bandWidth: 'pct', animation: 'x',
+  };
   const RANGES = {
-    ship: [['tint', 'Hull tint', 0, 1, .01], ['glow', 'Rim brightness', 0, 1.5, .01], ['expansion', 'Rim spread', 0, .12, .005], ['pulse', 'Pulse speed', 0, 2, .05], ['pulseDepth', 'Pulse amount', 0, .4, .01]],
-    laser: [['shotTint', 'Laser tint', 0, 1, .01], ['patternStrength', 'Detail intensity', 0, 1, .01], ['bandWidth', 'Detail width', .035, .2, .005], ['animation', 'Pattern motion', 0, 2, .05]],
+    hullTone: [
+      ['tint', 'Hull tint strength'],
+      ['pulse', 'Pulse speed'],
+      ['pulseDepth', 'Pulse amount'],
+    ],
+    stripe: [
+      ['stripeDensity', 'Stripe count'],
+      ['stripeWidth', 'Stripe thickness'],
+      ['stripeOpacity', 'Stripe opacity'],
+      ['stripeFlow', 'Stripe drift'],
+    ],
+    rim: [
+      ['glow', 'Rim brightness'],
+      ['expansion', 'Rim spread'],
+    ],
+    laser: [
+      ['shotTint', 'Laser tint'],
+      ['patternStrength', 'Detail intensity'],
+      ['bandWidth', 'Detail width'],
+      ['animation', 'Pattern motion'],
+    ],
   };
 
+  function formatValue(key, value) {
+    switch (FORMATS[key]) {
+      case 'pct': return `${Math.round(value * 100)}%`;
+      case 'hz': return `${value.toFixed(2)} Hz`;
+      case 'x': return `${value.toFixed(2)}\u00d7`;
+      case 'lines': return `${Math.round(value)} lines`;
+      default: return String(Number(value.toFixed(3)));
+    }
+  }
+
+  const STYLE = `
+    :host { font:15px/1.5 'Segoe UI',system-ui,sans-serif; color:#eef4f9; }
+    * { box-sizing:border-box; } [hidden] { display:none!important; }
+    button,input,select { font:inherit; }
+    button,select,input[type=checkbox],input[type=color],input[type=range] { cursor:pointer; }
+    button { color:inherit; border:1px solid #37485c; background:#1a2634; border-radius:10px; padding:11px 15px; transition:background .14s ease,border-color .14s ease,transform .08s ease; }
+    button:hover { background:#26384b; border-color:#7fd4e6; }
+    button:active { transform:translateY(1px); }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    button:focus-visible,input:focus-visible,select:focus-visible { outline:2px solid #7ce4f1; outline-offset:3px; }
+
+    .dock { pointer-events:auto; position:absolute; bottom:20px; left:20px; display:flex; align-items:center; gap:12px;
+      padding:9px 18px 9px 8px; background:#0e1722; box-shadow:0 6px 26px #000a; border-color:#a98853; }
+    .dock svg { width:42px; height:42px; }
+    .dock b { letter-spacing:.2em; font-size:17px; }
+    .dock small { display:block; color:#7bd6c6; font-size:11px; letter-spacing:.1em; }
+    .dock.off small { color:#ff9a8a; }
+
+    .toast { pointer-events:none; position:absolute; top:22px; left:50%; transform:translate(-50%,-14px); opacity:0;
+      padding:12px 22px; border-radius:12px; background:#0d1620; border:1px solid #3c5568;
+      box-shadow:0 12px 40px #000b; font-size:15px; letter-spacing:.04em; transition:opacity .18s ease,transform .18s ease; }
+    .toast.show { opacity:1; transform:translate(-50%,0); }
+    .toast[data-tone=on] { border-color:#54d8a6; color:#c7ffe9; }
+    .toast[data-tone=off] { border-color:#e0785f; color:#ffd8cd; }
+
+    .panel { pointer-events:auto; position:absolute; left:20px; bottom:94px; width:620px; min-width:560px;
+      max-width:calc(100vw - 26px); max-height:calc(100vh - 124px); overflow:auto; background:#0e1620;
+      border:1px solid #43596c; border-radius:18px; box-shadow:0 26px 90px #000c;
+      scrollbar-width:thin; scrollbar-color:#43596c #0e1620; }
+    .panel::-webkit-scrollbar { width:10px; } .panel::-webkit-scrollbar-thumb { background:#31465a; border-radius:8px; }
+
+    header { display:flex; align-items:center; gap:16px; padding:20px 22px 16px; border-bottom:1px solid #29394a;
+      background:linear-gradient(125deg,#1d2f3e,#111b25); }
+    header svg { width:74px; height:74px; flex:none; }
+    header div.title { flex:1; }
+    header small { color:#d6bb82; letter-spacing:.26em; font-size:11px; }
+    h1 { font-size:33px; letter-spacing:.06em; margin:0; line-height:1.12; font-weight:600; }
+    header p { font-size:12.5px; color:#9db3c4; margin:6px 0 0; }
+    header p b { color:#8fe6d5; }
+    .close { align-self:flex-start; font-size:24px; line-height:1; padding:4px 12px; background:transparent; border-color:transparent; }
+
+    .power-wrap { display:flex; flex-direction:column; gap:10px; padding:18px 22px 6px; }
+    .power { display:flex; align-items:center; gap:14px; width:100%; padding:18px 22px; border-radius:14px; font-size:20px;
+      font-weight:600; letter-spacing:.14em; border:2px solid #2f8f74; background:linear-gradient(120deg,#10402f,#123326); color:#c8ffe9; }
+    .power:hover { border-color:#63e7b6; background:linear-gradient(120deg,#14523c,#16412f); }
+    .power .led { width:15px; height:15px; border-radius:50%; background:#4fe0a6; box-shadow:0 0 14px #4fe0a6; flex:none; }
+    .power small { margin-left:auto; font-size:12px; letter-spacing:.16em; opacity:.75; font-weight:400; }
+    .power.off { border-color:#8a3f34; background:linear-gradient(120deg,#40140f,#2a1512); color:#ffd0c5; }
+    .power.off:hover { border-color:#ef8a72; }
+    .power.off .led { background:#ff6f52; box-shadow:0 0 14px #ff6f52; }
+
+    .status { padding:11px 14px; background:#0a121b; border:1px solid #24313f; border-radius:10px; color:#a9c6d0; font-size:12.5px; }
+
+    .quick { display:flex; align-items:center; gap:8px; padding:12px 22px 4px; flex-wrap:wrap; }
+    .quick .presets { flex:1; min-width:340px; }
+    .presets { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+    .presets button { padding:11px 4px; font-size:13.5px; letter-spacing:.05em; }
+    .presets button.active { border-color:#7fe3c4; background:#14332c; box-shadow:inset 0 0 0 1px #7fe3c4; color:#dcfff3; }
+
+    .tabs { display:flex; gap:6px; padding:14px 22px 0; border-bottom:1px solid #26374a; }
+    .tabs button { border:1px solid transparent; border-bottom:none; border-radius:12px 12px 0 0; background:transparent;
+      padding:12px 18px; font-size:14px; letter-spacing:.1em; text-transform:uppercase; color:#8fa6b8; }
+    .tabs button:hover { color:#dbe9f2; background:#16222f; }
+    .tabs button[aria-selected=true] { color:#f4e7c6; background:#16222f; border-color:#334a5e; box-shadow:inset 0 3px 0 #d9bd85; }
+
+    .tabbody { padding:18px 22px 6px; }
+    .card { background:#131e2a; border:1px solid #26374a; border-radius:14px; padding:16px 18px; margin-bottom:16px; }
+    .card > h2 { margin:0 0 4px; font-size:13px; letter-spacing:.18em; text-transform:uppercase; color:#d5bf93; font-weight:600; }
+    .card.experimental { border-style:dashed; border-color:#5c4a6e; }
+    .card.experimental h2 { color:#c6a6ef; }
+
+    .cardtop { display:flex; align-items:center; gap:14px; justify-content:space-between; flex-wrap:wrap; }
+    .check { display:flex; align-items:center; gap:10px; font-size:15px; }
+    input[type=checkbox] { accent-color:#74dcda; width:22px; height:22px; margin:0; flex:none; }
+    .swatchbox { display:flex; align-items:center; gap:10px; }
+    canvas.mini { width:150px; height:52px; display:block; border:1px solid #2d404f; border-radius:9px; background:#070d14; }
+    .swatchbox span { font-size:10.5px; letter-spacing:.1em; color:#7f97a8; max-width:92px; }
+
+    .colors { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:14px 0 4px; }
+    .swatch { display:flex; align-items:center; gap:12px; background:#0f1a25; border:1px solid #243545;
+      padding:11px 13px; border-radius:11px; font-size:13.5px; }
+    .swatch .dot { width:16px; height:16px; border-radius:50%; flex:none; box-shadow:0 0 10px #0008 inset,0 0 8px currentColor; }
+    .swatch small { display:block; color:#93a6b6; font:12px Consolas,ui-monospace,monospace; margin-top:3px; letter-spacing:.06em; }
+    input[type=color] { padding:0; border:1px solid #35495c; border-radius:7px; background:transparent; width:52px; height:42px; flex:none; }
+
+    .range { display:block; margin:16px 0 6px; }
+    .range span { display:flex; justify-content:space-between; align-items:baseline; font-size:13.5px; color:#c6d3dd; }
+    output { color:#83e6ee; font:13px Consolas,ui-monospace,monospace; background:#0c1620; border:1px solid #253748;
+      border-radius:7px; padding:3px 9px; min-width:78px; text-align:right; }
+    input[type=range] { display:block; width:100%; height:26px; margin:8px 0 0; accent-color:#69c9d6; background:transparent; }
+    input[type=range]::-webkit-slider-runnable-track { height:8px; border-radius:6px; background:#22333f; }
+    input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:22px; height:22px; margin-top:-7px; border-radius:50%;
+      background:#7fe0ea; border:2px solid #0d1620; box-shadow:0 0 10px #0008; }
+    input[type=range]::-moz-range-track { height:8px; border-radius:6px; background:#22333f; }
+    input[type=range]::-moz-range-thumb { width:20px; height:20px; border-radius:50%; background:#7fe0ea; border:2px solid #0d1620; }
+
+    .field { display:block; margin:14px 0; font-size:13.5px; color:#c6d3dd; }
+    select { display:block; width:100%; padding:12px; margin-top:8px; font-size:14.5px; color:#e6f1f8; background:#0f1a25;
+      border:1px solid #37485c; border-radius:9px; }
+    .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    .hint { font-size:12.5px; color:#94aaba; margin:12px 0 2px; }
+    .hint b { color:#c3d6e2; }
+    .row { display:flex; gap:9px; margin-top:12px; flex-wrap:wrap; }
+    .row button { font-size:13.5px; }
+    input[type=text] { background:#0f1a25; border:1px solid #37485c; border-radius:9px; padding:12px; width:100%; color:inherit; margin-top:8px; }
+
+    .notice { margin:4px 22px 0; padding:14px 16px; color:#a7cdd5; font-size:13px; background:#0b1620;
+      border:1px solid #26374a; border-radius:11px; overflow-wrap:anywhere; }
+    footer { padding:14px 22px 20px; color:#94a9b9; font-size:12.5px; }
+    kbd { color:#e6eef5; background:#22344a; border:1px solid #3a5066; padding:2px 7px; border-radius:5px; font:12px Consolas,monospace; }
+    .privacy { display:inline-block; margin-top:8px; padding:4px 10px; border-radius:999px; background:#132c26; border:1px solid #2e6a56; color:#93e7c9; font-size:11.5px; letter-spacing:.08em; }
+
+    @media(max-width:700px) {
+      .panel { left:10px; bottom:86px; width:calc(100vw - 20px); min-width:0; }
+      .dock { left:10px; bottom:12px; } header { padding:16px; } h1 { font-size:27px; }
+      .quick .presets { min-width:0; } .colors,.grid2 { grid-template-columns:1fr; }
+    }
+    @media(prefers-reduced-motion:reduce) { button:active { transform:none; } .toast { transition:none; } }
+  `;
+
   function buildUI() {
+    // Never allow two docks/panels: clear any leftover host from a previous injection.
+    document.querySelectorAll('#mrp-lumen-local').forEach(node => node.remove());
     const host = document.createElement('div');
     host.id = 'mrp-lumen-local';
-    host.style.cssText = "all:initial!important;font:14px/1.45 'Segoe UI',system-ui,sans-serif!important;color:#edf2f6!important;position:fixed!important;inset:0!important;pointer-events:none!important;z-index:2147483646!important;";
+    host.style.cssText = "all:initial!important;font:15px/1.5 'Segoe UI',system-ui,sans-serif!important;color:#eef4f9!important;position:fixed!important;inset:0!important;pointer-events:none!important;z-index:2147483646!important;";
     const root = host.attachShadow({ mode: 'open' });
-    const sliders = group => RANGES[group].map(([key, label, min, max, step]) => `
-      <label class="range"><span>${label}<output data-value="${key}"></output></span>
-      <input data-key="${key}" type="range" min="${min}" max="${max}" step="${step}"></label>`).join('');
-    const color = keys => COLORS.filter(([key]) => keys.includes(key)).map(([key, label]) => `
-      <label class="swatch"><input type="color" data-key="${key}"><span>${label}<small data-color="${key}"></small></span></label>`).join('');
+    const sliders = group => RANGES[group].map(([key, label]) => {
+      const [min, max] = BOUNDS[key];
+      const step = key === 'stripeDensity' ? 1 : (max - min) / 100 >= .01 ? .01 : .005;
+      return `<label class="range"><span>${label}<output data-value="${key}"></output></span>
+        <input data-key="${key}" type="range" min="${min}" max="${max}" step="${step}"></label>`;
+    }).join('');
+    const colorRow = keys => keys.map(key => `
+      <label class="swatch"><input type="color" data-key="${key}">
+      <span><i class="dot" data-dot="${key}"></i> ${COLORS[key]}<small data-color="${key}"></small></span></label>`).join('');
+    const options = (map, keys) => keys.map(k => `<option value="${k}">${map[k]}</option>`).join('');
+
     root.innerHTML = `
-      <style>
-        :host { font:14px/1.45 'Segoe UI',system-ui,sans-serif; color:#edf2f6; }
-        * { box-sizing:border-box; } [hidden] { display:none!important; }
-        button,input,select { font:inherit; } button,select,input[type=checkbox],input[type=color] { cursor:pointer; }
-        button { color:inherit; border:1px solid #354454; background:#182330; border-radius:8px; padding:9px 12px; }
-        button:hover { background:#243547; border-color:#76cada; } button:active { transform:translateY(1px); }
-        button:focus-visible,input:focus-visible,select:focus-visible { outline:2px solid #7ce4f1; outline-offset:3px; }
-        .dock { pointer-events:auto; position:absolute; bottom:18px; left:18px; display:flex; align-items:center; gap:10px;
-          padding:7px 14px 7px 6px; background:#101924; box-shadow:0 5px 20px #0009; border-color:#a98853; }
-        .dock svg { width:35px; height:35px; } .dock b { letter-spacing:.18em; } .dock small { display:block; color:#7bd6c6; font-size:10px; letter-spacing:.08em; }
-        .panel { pointer-events:auto; position:absolute; left:18px; bottom:82px; width:440px; max-width:calc(100vw - 24px);
-          max-height:calc(100vh - 106px); overflow:auto; background:#101822; border:1px solid #405566; border-radius:15px;
-          box-shadow:0 22px 70px #000b; scrollbar-width:thin; scrollbar-color:#405566 #101822; }
-        header { display:flex; align-items:center; gap:12px; padding:18px 18px 13px; border-bottom:1px solid #293746;
-          background:linear-gradient(125deg,#1b2a37,#111a23); }
-        header svg { width:64px; height:64px; flex:none; } header div { flex:1; } header small { color:#d6bb82; letter-spacing:.24em; font-size:10px; }
-        h1 { font-size:27px; letter-spacing:.06em; margin:0; line-height:1.15; font-weight:600; } header p { font-size:11px; color:#91a8b9; margin:5px 0 0; }
-        .close { align-self:flex-start; font-size:20px; padding:0 8px; background:transparent; border-color:transparent; }
-        .status { padding:11px 18px; background:#0c131c; border-bottom:1px solid #273340; color:#a9c6d0; font-size:12px; }
-        .preview { position:relative; height:135px; margin:14px 18px 9px; border:1px solid #2d404f; border-radius:9px; overflow:hidden;
-          background:radial-gradient(ellipse at center,#19313e,#0b111a); }
-        canvas { width:100%; height:100%; display:block; } .preview span { position:absolute; bottom:7px; left:10px; color:#8aa3b1; font-size:10px; letter-spacing:.12em; }
-        .master { display:flex; flex-wrap:wrap; gap:16px; padding:8px 18px 14px; } .check { display:flex; align-items:center; gap:8px; }
-        input[type=checkbox] { accent-color:#74dcda; width:17px; height:17px; margin:0; }
-        .presets { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; padding:0 18px 14px; } .presets button { padding:8px 2px; font-size:12px; }
-        details { border-top:1px solid #2b3946; padding:0 18px 13px; } summary { cursor:pointer; padding:14px 0 4px; letter-spacing:.08em; text-transform:uppercase; font-size:12px; color:#d5bf93; }
-        .colors { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:12px 0; }
-        .swatch { display:flex; align-items:center; gap:9px; background:#172331; padding:10px; border-radius:8px; font-size:12px; }
-        .swatch small { display:block; color:#93a6b6; font:11px Consolas,monospace; margin-top:3px; }
-        input[type=color] { padding:0; border:0; border-radius:4px; background:transparent; width:30px; height:34px; flex:none; }
-        .range { display:block; margin:13px 0 4px; } .range span { display:flex; justify-content:space-between; font-size:12px; color:#bfcbd5; }
-        output { color:#76dbe3; font:12px Consolas,monospace; } input[type=range] { display:block; width:100%; margin:9px 0; accent-color:#69c9d6; }
-        .field { display:block; margin:12px 0; font-size:12px; color:#bfcbd5; } select { display:block; width:100%; padding:9px; margin-top:6px; color:#e1edf4; background:#172331; border:1px solid #374b5c; border-radius:7px; }
-        .hint { font-size:11px; color:#8ea4b4; margin:10px 0 2px; } .row { display:flex; gap:7px; margin-top:10px; flex-wrap:wrap; }
-        .row button { font-size:12px; } input[type=text] { background:#172331; border:1px solid #374b5c; border-radius:7px; padding:9px; width:100%; color:inherit; }
-        .notice { margin:0; padding:12px 18px; color:#a7cdd5; font-size:12px; border-top:1px solid #273340; overflow-wrap:anywhere; }
-        footer { padding:0 18px 16px; color:#91a6b6; font-size:11px; } kbd { color:#d8e2eb; background:#223243; padding:2px 4px; border-radius:3px; }
-        @media(max-width:500px) { .panel { left:12px; bottom:78px; } .dock { left:12px; bottom:12px; } header { padding:14px; } h1 { font-size:24px; } }
-        @media(prefers-reduced-motion:reduce) { button:active { transform:none; } }
-      </style>
-      <button class="dock" id="dock" aria-controls="panel" aria-expanded="true" title="Open MRP settings (Shift+M)">${BADGE}<span><b>MRP</b><small id="dock-status">LOCAL COSMETICS</small></span></button>
+      <style>${STYLE}</style>
+      <button class="dock" id="dock" aria-controls="panel" aria-expanded="true" title="Open MRP settings (Shift+M)">${BADGE}<span><b>MRP</b><small id="dock-status">EFFECTS ON</small></span></button>
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
       <section class="panel" id="panel" role="dialog" aria-label="MRP Lumen cosmetic settings">
-        <header>${BADGE}<div><small>PERSONAL FLIGHT AESTHETICS</small><h1>MRP / LUMEN</h1><p>Your look. Your browser. No account required.</p></div><button id="close" class="close" aria-label="Close settings">&times;</button></header>
-        <div class="status" id="status" role="status">Waiting for the game renderer...</div>
-        <div class="preview"><canvas id="preview" aria-label="Illustrative cosmetic preview"></canvas><span>STYLE PREVIEW / NOT THE GAME CAMERA</span></div>
-        <div class="master"><label class="check"><input type="checkbox" data-key="enabled">Effects on</label><label class="check"><input type="checkbox" data-key="reduceMotion">Reduce motion</label></div>
-        <div class="presets">${Object.keys(BUILTINS).map(name => `<button data-preset="${name}">${name}</button>`).join('')}</div>
-        <details open><summary>01 / Hull &amp; lighting</summary>
-          <label class="check" style="margin-top:12px"><input type="checkbox" data-key="ship">Customize my ship</label>
-          <div class="colors">${color(['hull', 'rim'])}</div>${sliders('ship')}
-          <p class="hint">Follows the actual hull through upgrades. Special ship materials may be left unchanged.</p>
-        </details>
-        <details open><summary>02 / Laser design</summary>
-          <label class="check" style="margin-top:12px"><input type="checkbox" data-key="lasers">Style laser particles</label>
-          <div class="colors">${color(['shot', 'accent'])}</div>
-          <label class="field">Pattern<select data-key="pattern"><option value="native">Original + tint</option><option value="plasma">Plasma core</option><option value="crescent">Twin crescents</option><option value="helix">Helix filaments</option><option value="prism">Prism cut</option></select></label>
-          <label class="field">Apply to<select data-key="scope"><option value="own">My confirmed shots only</option><option value="visible">All rendered laser particles</option></select></label>
-          ${sliders('laser')}<p class="hint">Curves are patterns inside native laser sprites, not changed flight paths. Includes laser impact particles. Rockets, missiles, damage and hitboxes stay original.</p>
-        </details>
-        <details><summary>03 / Personal presets</summary>
-          <label class="field">Preset name<input id="preset-name" type="text" maxlength="28" placeholder="My signature look" autocomplete="off"></label>
-          <button id="save-preset">Save this look</button>
-          <label class="field">Saved looks<select id="saved-presets"></select></label>
-          <div class="row"><button id="load-preset">Apply</button><button id="delete-preset">Delete selected</button><button id="export">Export JSON</button><button id="import">Import JSON</button></div>
-          <input id="import-file" type="file" accept=".json,application/json" hidden>
-          <p class="hint">Stored only in this browser. Up to eight named looks. Export for another device.</p>
-        </details>
-        <details><summary>04 / Badge &amp; compatibility</summary>
-          <label class="check" style="margin-top:12px"><input type="checkbox" data-key="badge">Show my MRP emblem on the dock</label>
-          <p class="hint">The original MRP badge is personal artwork, not an ECP badge or a public nameplate.</p>
-          <div class="row"><button id="badge-download">Download SVG badge</button><button id="reconnect">Reconnect adapter</button><button id="reset">Reset look</button></div>
-          <p class="hint" id="diagnostics"></p>
-        </details>
-        <p class="notice" id="notice" role="status">Changes apply live. Existing bullets are left original until their ownership is known.</p>
-        <footer><kbd>Shift</kbd> + <kbd>M</kbd> settings &nbsp; <kbd>Alt</kbd> + <kbd>M</kbd> effects.<br>Local-only visuals. No ECP unlocks, network changes, or gameplay changes.</footer>
+        <header>${BADGE}<div class="title"><small>PERSONAL FLIGHT AESTHETICS</small><h1>MRP / LUMEN</h1>
+          <p>Hull recolour, thin stripes and patterned bolts. <b>Only you see this.</b> No ECP unlock, no gameplay change.</p></div>
+          <button id="close" class="close" aria-label="Close settings" title="Close (Shift+M)">&times;</button></header>
+
+        <div class="power-wrap">
+          <button id="power" class="power" aria-pressed="true"><span class="led"></span><span id="power-text">EFFECTS ON</span><small>ALT + M</small></button>
+          <div class="status" id="status" role="status">Waiting for the game renderer...</div>
+        </div>
+
+        <div class="quick">
+          <div class="presets">${Object.keys(BUILTINS).map(name => `<button data-preset="${name}">${name}</button>`).join('')}</div>
+          <label class="check"><input type="checkbox" data-key="reduceMotion">Reduce motion</label>
+        </div>
+
+        <div class="tabs" role="tablist" aria-label="MRP sections">
+          <button role="tab" data-tab="ship" aria-selected="true">Ship</button>
+          <button role="tab" data-tab="laser" aria-selected="false">Lasers</button>
+          <button role="tab" data-tab="presets" aria-selected="false">Presets</button>
+          <button role="tab" data-tab="system" aria-selected="false">System</button>
+        </div>
+
+        <div class="tabbody">
+          <section role="tabpanel" data-panel="ship">
+            <div class="card">
+              <div class="cardtop">
+                <label class="check"><input type="checkbox" data-key="ship">Recolour my ship</label>
+                <div class="swatchbox"><canvas class="mini" id="swatch-ship" aria-label="Hull colour and stripe swatch"></canvas><span>LIVE SWATCH &middot; NOT A SHIP MODEL</span></div>
+              </div>
+              <div class="colors">${colorRow(['hull', 'trim'])}</div>
+              ${sliders('hullTone')}
+              <p class="hint">The tint multiplies your <b>existing</b> hull material. No replacement ship is created, and textures, opacity and shape stay native.</p>
+            </div>
+            <div class="card">
+              <h2>Stripes</h2>
+              <label class="check" style="margin-top:10px"><input type="checkbox" data-key="stripes">Thin racing stripes</label>
+              ${sliders('stripe')}
+              <label class="field">Stripe direction<select data-key="stripeAxis">${options(AXES, Object.keys(AXES))}</select></label>
+              <p class="hint">Stripes are painted on the game's own hull geometry each frame and removed again afterwards. Keep them subtle for an ECP-like finish.</p>
+            </div>
+            <div class="card experimental">
+              <h2>Experimental rim</h2>
+              <label class="check" style="margin-top:10px"><input type="checkbox" data-key="rimEnabled">Enable experimental rim shell (off by default)</label>
+              <div class="colors">${colorRow(['rim'])}</div>
+              ${sliders('rim')}
+              <p class="hint">The rim is an extra additive shell around the hull. It is a visual shell only - hitboxes are untouched - but it can look heavy. Leave it off for the ECP-style look.</p>
+            </div>
+          </section>
+
+          <section role="tabpanel" data-panel="laser" hidden>
+            <div class="card">
+              <div class="cardtop">
+                <label class="check"><input type="checkbox" data-key="lasers">Style laser particles</label>
+                <div class="swatchbox"><canvas class="mini" id="swatch-laser" aria-label="Laser pattern swatch"></canvas><span>LIVE SWATCH &middot; SPRITE ONLY</span></div>
+              </div>
+              <div class="colors">${colorRow(['shot', 'accent'])}</div>
+              <div class="grid2">
+                <label class="field">Bolt pattern<select data-key="pattern">${options(PATTERN_LABELS, PATTERNS)}</select></label>
+                <label class="field">Apply to<select data-key="scope"><option value="own">My confirmed shots only</option><option value="visible">All rendered laser particles</option></select></label>
+              </div>
+              ${sliders('laser')}
+              <p class="hint"><b>VISUAL ONLY:</b> every curve, zigzag and chevron is drawn inside the native particle sprite. Bullet speed, direction, range, lifetime, damage and hitboxes are never touched - nothing bends the actual flight path.</p>
+              <p class="hint">Includes laser impact particles from the same pool. Rockets, missiles, mines and special weapons keep their original look.</p>
+            </div>
+          </section>
+
+          <section role="tabpanel" data-panel="presets" hidden>
+            <div class="card">
+              <h2>Built-in looks</h2>
+              <p class="hint">The highlighted look matches your current colours and pattern.</p>
+              <div class="presets" style="margin-top:10px">${Object.keys(BUILTINS).map(name => `<button data-preset="${name}">${name}</button>`).join('')}</div>
+            </div>
+            <div class="card">
+              <h2>Personal presets</h2>
+              <label class="field">Preset name<input id="preset-name" type="text" maxlength="28" placeholder="My signature look" autocomplete="off"></label>
+              <button id="save-preset">Save this look</button>
+              <label class="field">Saved looks<select id="saved-presets"></select></label>
+              <div class="row"><button id="load-preset">Apply</button><button id="delete-preset">Delete selected</button><button id="export">Export JSON</button><button id="import">Import JSON</button></div>
+              <input id="import-file" type="file" accept=".json,application/json" hidden>
+              <p class="hint">Stored only in this browser. Up to eight named looks. Imported JSON is validated, never executed.</p>
+            </div>
+          </section>
+
+          <section role="tabpanel" data-panel="system" hidden>
+            <div class="card">
+              <h2>Badge &amp; maintenance</h2>
+              <label class="check" style="margin-top:10px"><input type="checkbox" data-key="badge">Show my MRP emblem on the dock</label>
+              <p class="hint">The MRP badge is personal artwork on your own dock. It is not an ECP badge and never appears on your public nameplate.</p>
+              <div class="row"><button id="badge-download">Download SVG badge</button><button id="reconnect">Reconnect adapter</button><button id="reset">Reset look</button></div>
+            </div>
+            <div class="card">
+              <h2>Diagnostics</h2>
+              <p class="hint" id="diagnostics"></p>
+              <p class="hint">One panel, one dock, four tabs - MRP never opens a second window. <span class="privacy">LOCAL ONLY &middot; NOTHING IS SENT ANYWHERE</span></p>
+            </div>
+          </section>
+        </div>
+
+        <p class="notice" id="notice" role="status">Changes apply live. Existing bullets keep their original look until their ownership is known.</p>
+        <footer><kbd>Shift</kbd>+<kbd>M</kbd> open / close this panel &nbsp;&middot;&nbsp; <kbd>Alt</kbd>+<kbd>M</kbd> effects on / off &nbsp;&middot;&nbsp; <kbd>Esc</kbd> close.<br>
+        Local-only visuals. No ECP unlocks, no network changes, no gameplay changes.</footer>
       </section>`;
+
     document.body.append(host);
     const $ = selector => root.querySelector(selector);
-    ui = { host, root, $, panel: $('#panel'), canvas: $('#preview'), open: true };
+    ui = { host, root, $, panel: $('#panel'), shipSwatch: $('#swatch-ship'), laserSwatch: $('#swatch-laser'), open: true, tab: 'ship' };
+
     root.addEventListener('input', event => {
       const key = event.target.dataset?.key;
       if (!Object.hasOwn(DEFAULTS, key)) return;
@@ -622,11 +979,14 @@
       settings = sanitize({ ...DEFAULTS, ...BUILTINS[button.dataset.preset], enabled: settings.enabled, reduceMotion: settings.reduceMotion });
       changed();
       notify(`${button.dataset.preset} applied. Adjust any value to make it yours.`);
+      toast(`${button.dataset.preset} look applied`);
     }));
-    $('#dock').addEventListener('click', () => panelOpen(!ui.open));
+    root.querySelectorAll('[data-tab]').forEach(button => button.addEventListener('click', () => selectTab(button.dataset.tab)));
+    $('#dock').addEventListener('click', () => panelOpen(!ui.open, true));
     $('#close').addEventListener('click', () => panelOpen(false));
-    $('#reset').addEventListener('click', () => { settings = { ...DEFAULTS, reduceMotion: settings.reduceMotion }; changed(); notify('Default Aurora look restored. Saved presets kept.'); });
-    $('#reconnect').addEventListener('click', () => { detachAdapter(); suspended = false; fault = ''; installAdapter(); notify('Adapter reconnected. Fire a new shot to establish ownership.'); });
+    $('#power').addEventListener('click', () => toggleEffects());
+    $('#reset').addEventListener('click', () => { settings = { ...DEFAULTS, reduceMotion: settings.reduceMotion }; changed(); notify('Default Aurora look restored. Saved presets kept.'); toast('Look reset'); });
+    $('#reconnect').addEventListener('click', () => { detachAdapter(); suspended = false; fault = ''; installAdapter(); notify('Adapter reconnected. Fire a new shot to establish ownership.'); toast('Adapter reconnected'); });
     $('#save-preset').addEventListener('click', () => {
       const name = $('#preset-name').value.trim().slice(0, 28);
       if (!name) return notify('Give your look a name first.');
@@ -634,12 +994,12 @@
       if (existing) existing.settings = { ...settings };
       else if (customs.length < 8) customs.push({ name, settings: { ...settings } });
       else return notify('Eight presets are saved. Delete one or export them first.');
-      saveNow(); refreshPresetList(); $('#saved-presets').value = name; notify(`Saved: ${name}`);
+      saveNow(); refreshPresetList(); $('#saved-presets').value = name; notify(`Saved: ${name}`); toast(`Saved "${name}"`);
     });
     $('#load-preset').addEventListener('click', () => {
       const p = customs.find(preset => preset.name === $('#saved-presets').value);
       if (!p) return;
-      settings = sanitize(p.settings); changed(); notify(`Applied: ${p.name}`);
+      settings = sanitize(p.settings); changed(); notify(`Applied: ${p.name}`); toast(`Applied "${p.name}"`);
     });
     $('#delete-preset').addEventListener('click', () => {
       const name = $('#saved-presets').value;
@@ -662,7 +1022,24 @@
         saveNow(); syncUI(); refreshPresetList(); notify('Imported settings. Values were validated; no code was executed.');
       } catch { notify('Import rejected: this is not a valid MRP Lumen preset file.'); }
     });
-    syncUI(); refreshPresetList(); previewFrame = requestAnimationFrame(preview);
+    selectTab('ship');
+    syncUI(); refreshPresetList(); startSwatches();
+  }
+
+  function selectTab(name) {
+    if (!ui) return;
+    ui.tab = name;
+    ui.root.querySelectorAll('[data-tab]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.tab === name)));
+    ui.root.querySelectorAll('[data-panel]').forEach(section => { section.hidden = section.dataset.panel !== name; });
+  }
+
+  function toggleEffects(force) {
+    settings.enabled = typeof force === 'boolean' ? force : !settings.enabled;
+    changed();
+    // Immediate visible feedback, even if the renderer is not attached yet.
+    toast(settings.enabled ? 'MRP effects ON' : 'MRP effects OFF', settings.enabled ? 'on' : 'off');
+    notify(settings.enabled ? 'Effects enabled. Your hull and bolts are styled again.' : 'Effects disabled. Starblast renders its original visuals.');
+    drawSwatches(performance.now(), true);
   }
 
   function refreshPresetList() {
@@ -673,44 +1050,77 @@
     for (const p of customs) select.add(new Option(p.name, p.name));
     ui.$('#load-preset').disabled = ui.$('#delete-preset').disabled = !customs.length;
   }
+
+  function presetMatches(name) {
+    return Object.entries(BUILTINS[name]).every(([key, value]) => settings[key] === value);
+  }
+
   function syncUI() {
     if (!ui) return;
     ui.root.querySelectorAll('[data-key]').forEach(input => {
       const key = input.dataset.key;
       if (input.type === 'checkbox') input.checked = settings[key]; else input.value = settings[key];
     });
-    ui.root.querySelectorAll('[data-value]').forEach(output => { output.value = String(Number(settings[output.dataset.value].toFixed(3))); });
+    ui.root.querySelectorAll('[data-value]').forEach(output => { output.value = formatValue(output.dataset.value, settings[output.dataset.value]); });
     ui.root.querySelectorAll('[data-color]').forEach(label => { label.textContent = settings[label.dataset.color].toUpperCase(); });
+    ui.root.querySelectorAll('[data-dot]').forEach(dot => { dot.style.background = settings[dot.dataset.dot]; dot.style.color = settings[dot.dataset.dot]; });
+    ui.root.querySelectorAll('[data-preset]').forEach(button => button.classList.toggle('active', presetMatches(button.dataset.preset)));
     ui.$('.dock svg').style.display = settings.badge ? '' : 'none';
-    ui.$('#dock-status').textContent = settings.enabled ? 'LOCAL COSMETICS' : 'EFFECTS OFF';
+    ui.$('#dock-status').textContent = settings.enabled ? 'EFFECTS ON' : 'EFFECTS OFF';
+    ui.$('#dock').classList.toggle('off', !settings.enabled);
+    ui.$('#power-text').textContent = settings.enabled ? 'EFFECTS ON' : 'EFFECTS OFF';
+    ui.$('#power').classList.toggle('off', !settings.enabled);
+    ui.$('#power').setAttribute('aria-pressed', String(settings.enabled));
     updateStatus();
   }
+
   function notify(message) { if (ui) ui.$('#notice').textContent = message; }
-  function panelOpen(open) {
+
+  function toast(message, tone) {
+    if (!ui) return;
+    const element = ui.$('#toast');
+    element.textContent = message;
+    element.dataset.tone = tone || 'info';
+    element.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => element.classList.remove('show'), 1700);
+  }
+
+  function gameFocusTarget() {
+    return document.querySelector('#canvaswrapper canvas') || document.querySelector('canvas') || document.body;
+  }
+
+  function panelOpen(open, moveFocus) {
     if (!ui) return;
     if (open && document.activeElement !== ui.host) previousFocus = document.activeElement;
     ui.open = open;
     ui.panel.hidden = !open;
     ui.$('#dock').setAttribute('aria-expanded', String(open));
-    if (open) { ui.$('#close').focus(); if (!previewFrame) previewFrame = requestAnimationFrame(preview); }
-    else {
-      cancelAnimationFrame(previewFrame); previewFrame = 0;
+    if (open) {
+      // Only steal focus for pointer/explicit opens; hotkey opens leave the game focused.
+      if (moveFocus) ui.$('#power').focus();
+      startSwatches();
+    } else {
+      stopSwatches();
       ui.root.activeElement?.blur();
-      if (previousFocus?.isConnected && previousFocus !== ui.host) previousFocus.focus({ preventScroll: true });
+      const back = previousFocus?.isConnected && previousFocus !== ui.host && !ui.host.contains(previousFocus) ? previousFocus : gameFocusTarget();
+      try { back.focus({ preventScroll: true }); } catch { /* focus target vanished */ }
     }
   }
+
   function updateStatus() {
     if (!ui) return;
     const now = performance.now();
     let text = 'Waiting for a gameplay scene. Enter Training or a game when ready.';
-    if (!settings.enabled) text = 'Effects off. Starblast uses its original visuals.';
+    if (!settings.enabled) text = 'Effects off (Alt+M or the big button turns them back on). Starblast uses its original visuals.';
     else if (suspended || fault) text = fault;
     else if (now - lastDraw < 2500 && lastDraw) text = now - lastShipDraw < 2500 ? 'Renderer connected / Your hull is styled live.' : 'Renderer connected / Waiting for your visible hull.';
-    else if (!installed && now - started > 12000) text = 'Adapter unavailable in this page/build. Preview works; game visuals are unchanged.';
+    else if (!installed && now - started > 12000) text = 'Adapter unavailable in this page/build. Panel works; game visuals are unchanged.';
     ui.$('#status').textContent = text;
-    ui.$('#diagnostics').textContent = `Three.js ${window.THREE?.REVISION || 'not exposed'} / adapter ${installed ? 'attached' : 'waiting'} / ${layers.size} scene(s) / ${ownEmissions} own shot emission(s) identified. No ownership is guessed. Updates to Starblast may require an adapter update.`;
+    ui.$('#diagnostics').textContent = `MRP ${VERSION} / Three.js ${window.THREE?.REVISION || 'not exposed'} / adapter ${installed ? 'attached' : 'waiting'} / ${layers.size} scene(s) / ${ownEmissions} own shot emission(s) identified. No ownership is guessed. Updates to Starblast may require an adapter update.`;
     if (storageWarning) notify(storageWarning);
   }
+
   function download(name, content, type) {
     const objectURL = URL.createObjectURL(new Blob([content], { type }));
     const a = document.createElement('a'); a.href = objectURL; a.download = name;
@@ -718,69 +1128,202 @@
     setTimeout(() => URL.revokeObjectURL(objectURL), 2000);
   }
 
-  function preview(time) {
-    previewFrame = 0;
+  /* ---------------------------------------------------- inline swatches */
+  // Tiny colour chips, deliberately NOT a ship illustration and NOT a game readout.
+
+  function startSwatches() {
+    if (!ui?.open || disposed || document.hidden || swatchFrame) return;
+    swatchFrame = requestAnimationFrame(swatchLoop);
+  }
+  function stopSwatches() {
+    cancelAnimationFrame(swatchFrame);
+    swatchFrame = 0;
+  }
+  function swatchLoop(time) {
+    swatchFrame = 0;
     if (disposed || !ui?.open || document.hidden) return;
-    previewFrame = requestAnimationFrame(preview);
-    if (time - lastPreview < 33) return;
-    lastPreview = time;
-    const canvas = ui.canvas;
+    swatchFrame = requestAnimationFrame(swatchLoop);
+    if (time - lastSwatch < 40) return;
+    lastSwatch = time;
+    drawSwatches(time, false);
+  }
+
+  function context2d(canvas) {
     const rect = canvas.getBoundingClientRect();
-    if (!rect.width || !rect.height) return;
-    const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
+    if (!rect.width || !rect.height) return null;
+    const ratio = Math.min(window.devicePixelRatio || 1, 2);
     const w = Math.round(rect.width * ratio), h = Math.round(rect.height * ratio);
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
     const c = canvas.getContext('2d');
-    if (!c) return;
-    c.setTransform(ratio, 0, 0, ratio, 0, 0); c.clearRect(0, 0, rect.width, rect.height);
-    const t = settings.reduceMotion ? 0 : time / 1000;
-    const active = settings.enabled;
-    c.strokeStyle = '#54809622'; c.lineWidth = 1;
-    for (let x = 0; x < rect.width; x += 26) { c.beginPath(); c.moveTo(x, 0); c.lineTo(x, rect.height); c.stroke(); }
-    for (let y = 0; y < rect.height; y += 26) { c.beginPath(); c.moveTo(0, y); c.lineTo(rect.width, y); c.stroke(); }
-    c.save(); c.translate(rect.width * .23, rect.height * .48); c.rotate(-.12);
-    c.shadowColor = active && settings.ship ? settings.rim : '#7592aa';
-    c.shadowBlur = active && settings.ship ? settings.glow * 16 : 0;
-    c.beginPath(); c.moveTo(43, 0); c.lineTo(-21, -30); c.lineTo(-10, -9); c.lineTo(-35, -16);
-    c.lineTo(-24, 0); c.lineTo(-35, 16); c.lineTo(-10, 9); c.lineTo(-21, 30); c.closePath();
-    c.fillStyle = active && settings.ship ? settings.hull : '#b2cad5'; c.fill();
-    c.strokeStyle = active && settings.ship ? settings.rim : '#dce7ee'; c.stroke(); c.shadowBlur = 0;
-    c.beginPath(); c.moveTo(20, 0); c.lineTo(-13, -7); c.lineTo(-5, 0); c.lineTo(-13, 7); c.closePath(); c.fillStyle = '#183247'; c.fill(); c.restore();
-    for (let i = 0; i < 4; i++) {
-      const fraction = (t * .27 + i / 4) % 1;
-      c.save(); c.translate(rect.width * .42 + fraction * rect.width * .5, rect.height * .48);
-      c.shadowColor = active && settings.lasers ? settings.shot : '#b2e4f7'; c.shadowBlur = 8;
-      c.strokeStyle = c.shadowColor; c.lineWidth = 2.5;
-      c.beginPath(); c.moveTo(-10, 0); c.lineTo(8, 0); c.stroke();
-      if (active && settings.lasers && settings.pattern !== 'native') {
-        c.strokeStyle = settings.accent; c.lineWidth = 1 + settings.bandWidth * 8;
-        c.globalAlpha = settings.patternStrength; c.beginPath();
-        if (settings.pattern === 'helix') {
-          for (const sign of [-1, 1]) {
-            for (let x = -12; x <= 12; x++) { const y = sign * Math.sin(x * .25 - t * settings.animation * 3) * 4; if (x === -12) c.moveTo(x, y); else c.lineTo(x, y); }
-          }
-        } else if (settings.pattern === 'crescent') {
-          c.moveTo(-10, -3); c.bezierCurveTo(6, -11, 13, -1, 0, 4); c.moveTo(-10, 3); c.bezierCurveTo(6, 11, 13, 1, 0, -4);
-        } else if (settings.pattern === 'prism') { c.moveTo(-10, 0); c.lineTo(0, -7); c.lineTo(10, 0); c.lineTo(0, 7); c.closePath(); }
-        else c.arc(0, 0, 5, 0, Math.PI * 2);
-        c.stroke();
-      }
-      c.restore();
+    if (!c) return null;
+    c.setTransform(ratio, 0, 0, ratio, 0, 0);
+    c.clearRect(0, 0, rect.width, rect.height);
+    return { c, w: rect.width, h: rect.height };
+  }
+
+  function drawSwatches(time, force) {
+    if (!ui) return;
+    const t = settings.reduceMotion ? 0 : (time || 0) / 1000;
+    const shipVisible = force || ui.tab === 'ship';
+    const laserVisible = force || ui.tab === 'laser';
+    if (shipVisible) {
+      const ctx = context2d(ui.shipSwatch);
+      if (ctx) drawShipSwatch(ctx.c, ctx.w, ctx.h, t);
+    }
+    if (laserVisible) {
+      const ctx = context2d(ui.laserSwatch);
+      if (ctx) drawLaserSwatch(ctx.c, ctx.w, ctx.h, t);
     }
   }
 
+  function drawShipSwatch(c, w, h, t) {
+    const active = settings.enabled && settings.ship;
+    const pulse = 1 + Math.sin(t * Math.PI * 2 * settings.pulse) * settings.pulseDepth;
+    c.fillStyle = '#070d14'; c.fillRect(0, 0, w, h);
+    const pad = 6, pw = w - pad * 2, ph = h - pad * 2;
+    c.save();
+    c.beginPath();
+    const radius = 8;
+    c.moveTo(pad + radius, pad);
+    c.arcTo(pad + pw, pad, pad + pw, pad + ph, radius);
+    c.arcTo(pad + pw, pad + ph, pad, pad + ph, radius);
+    c.arcTo(pad, pad + ph, pad, pad, radius);
+    c.arcTo(pad, pad, pad + pw, pad, radius);
+    c.closePath();
+    c.clip();
+    const plate = c.createLinearGradient(pad, pad, pad + pw, pad + ph);
+    const base = active ? settings.hull : '#8fa3b0';
+    plate.addColorStop(0, base);
+    plate.addColorStop(1, '#0d1a24');
+    c.globalAlpha = active ? .35 + settings.tint * .65 : .45;
+    c.fillStyle = plate;
+    c.fillRect(pad, pad, pw, ph);
+    c.globalAlpha = 1;
+    if (active && settings.stripes && settings.stripeOpacity > 0) {
+      const count = Math.max(1, Math.round(settings.stripeDensity));
+      const cell = pw / count;
+      const thickness = Math.max(1, cell * Math.min(.6, settings.stripeWidth));
+      const drift = settings.reduceMotion ? 0 : (t * settings.stripeFlow * cell) % cell;
+      c.fillStyle = settings.trim;
+      c.globalAlpha = Math.min(1, settings.stripeOpacity * pulse);
+      for (let i = -1; i <= count; i++) {
+        const x = pad + i * cell + cell / 2 - thickness / 2 + drift;
+        c.fillRect(x, pad, thickness, ph);
+      }
+      c.globalAlpha = 1;
+    }
+    if (active && settings.rimEnabled && settings.glow > 0) {
+      c.strokeStyle = settings.rim;
+      c.globalAlpha = Math.min(1, settings.glow * .7);
+      c.lineWidth = 3 + settings.expansion * 30;
+      c.strokeRect(pad + 1, pad + 1, pw - 2, ph - 2);
+      c.globalAlpha = 1;
+    }
+    c.restore();
+    c.strokeStyle = '#2d404f'; c.lineWidth = 1;
+    c.strokeRect(.5, .5, w - 1, h - 1);
+    if (!active) {
+      c.fillStyle = '#8ea4b4'; c.font = '10px Consolas,monospace';
+      c.fillText(settings.enabled ? 'SHIP OFF' : 'EFFECTS OFF', 10, h - 9);
+    }
+  }
+
+  function drawLaserSwatch(c, w, h, t) {
+    const active = settings.enabled && settings.lasers;
+    c.fillStyle = '#070d14'; c.fillRect(0, 0, w, h);
+    const cy = h / 2;
+    const body = active ? settings.shot : '#b2e4f7';
+    c.save();
+    c.shadowColor = body; c.shadowBlur = 12;
+    c.strokeStyle = body; c.lineWidth = 7; c.lineCap = 'round';
+    c.beginPath(); c.moveTo(18, cy); c.lineTo(w - 18, cy); c.stroke();
+    c.shadowBlur = 0;
+    c.strokeStyle = '#ffffff'; c.globalAlpha = .35; c.lineWidth = 2;
+    c.beginPath(); c.moveTo(18, cy); c.lineTo(w - 18, cy); c.stroke();
+    c.globalAlpha = 1;
+    c.restore();
+    if (active && settings.pattern !== 'native' && settings.patternStrength > 0) {
+      const phase = settings.reduceMotion ? 0 : t * settings.animation * 2;
+      const amp = Math.min(h * .3, 12);
+      c.save();
+      c.strokeStyle = settings.accent;
+      c.lineWidth = 1 + settings.bandWidth * 14;
+      c.globalAlpha = Math.min(1, settings.patternStrength);
+      c.lineJoin = 'round';
+      c.beginPath();
+      const x0 = 20, x1 = w - 20;
+      if (settings.pattern === 'zigzag') {
+        const step = (x1 - x0) / 8;
+        for (let i = 0; i <= 8; i++) {
+          const x = x0 + i * step;
+          const y = cy + (i % 2 === 0 ? -amp : amp) * .55 * Math.cos(phase * .5);
+          if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
+        }
+      } else if (settings.pattern === 'chevron') {
+        const step = (x1 - x0) / 5;
+        for (let i = 0; i < 5; i++) {
+          const x = x0 + i * step + ((phase * 6) % step);
+          c.moveTo(x, cy - amp * .6); c.lineTo(x + step * .38, cy); c.lineTo(x, cy + amp * .6);
+        }
+      } else if (settings.pattern === 'crescent') {
+        c.moveTo(x0, cy - 4); c.bezierCurveTo((x0 + x1) / 2, cy - amp, x1, cy - 4, x1, cy);
+        c.moveTo(x0, cy + 4); c.bezierCurveTo((x0 + x1) / 2, cy + amp, x1, cy + 4, x1, cy);
+      } else if (settings.pattern === 'helix') {
+        for (const sign of [-1, 1]) {
+          for (let x = x0; x <= x1; x += 3) {
+            const y = cy + sign * Math.sin((x - x0) * .16 - phase) * amp * .5;
+            if (x === x0) c.moveTo(x, y); else c.lineTo(x, y);
+          }
+        }
+      } else if (settings.pattern === 'prism') {
+        const step = (x1 - x0) / 3;
+        for (let i = 0; i < 3; i++) {
+          const x = x0 + i * step;
+          c.moveTo(x, cy); c.lineTo(x + step / 2, cy - amp * .6); c.lineTo(x + step, cy); c.lineTo(x + step / 2, cy + amp * .6); c.closePath();
+        }
+      } else {
+        c.arc((x0 + x1) / 2, cy, 6 + Math.sin(phase) * 1.5, 0, Math.PI * 2);
+      }
+      c.stroke();
+      c.restore();
+    }
+    c.strokeStyle = '#2d404f'; c.lineWidth = 1;
+    c.strokeRect(.5, .5, w - 1, h - 1);
+    if (!active) {
+      c.fillStyle = '#8ea4b4'; c.font = '10px Consolas,monospace';
+      c.fillText(settings.enabled ? 'LASERS OFF' : 'EFFECTS OFF', 10, h - 9);
+    }
+  }
+
+  /* ------------------------------------------------------------ hotkeys */
+
+  function isMKey(event) {
+    // Layout tolerant: physical KeyM, the produced character, or the legacy code.
+    return event.code === 'KeyM' || event.keyCode === 77 ||
+      (typeof event.key === 'string' && (event.key.toLowerCase() === 'm' || event.key === '\u00b5'));
+  }
+
   function onKey(event) {
-    if (event.repeat || event.isComposing || event.ctrlKey || event.metaKey) return;
-    const editable = event.composedPath().some(n => n instanceof HTMLElement && (n.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(n.tagName)));
+    if (event.repeat || event.isComposing || handledKeys.has(event)) return;
+    const path = event.composedPath();
+    const editable = path.some(n => n instanceof HTMLElement && (n.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(n.tagName)));
     if (editable) return;
-    if (event.code === 'KeyM' && event.shiftKey && !event.altKey) {
-      event.preventDefault(); event.stopImmediatePropagation(); panelOpen(!ui?.open);
-    } else if (event.code === 'KeyM' && event.altKey && !event.shiftKey) {
-      event.preventDefault(); event.stopImmediatePropagation(); settings.enabled = !settings.enabled; changed();
-    } else if (event.code === 'Escape' && ui?.open && event.composedPath().includes(ui.host)) {
-      event.preventDefault(); event.stopImmediatePropagation(); panelOpen(false);
-    } else if (!event.composedPath().includes(ui?.host) ||
-        (event.composedPath().includes(ui?.$('#dock')) && !['Enter', 'Space'].includes(event.code))) {
+    const plain = !event.ctrlKey && !event.metaKey;
+    if (plain && isMKey(event) && event.shiftKey && !event.altKey) {
+      handledKeys.add(event);
+      event.preventDefault(); event.stopImmediatePropagation();
+      panelOpen(!ui?.open);
+      toast(ui?.open ? 'MRP panel open' : 'MRP panel closed');
+    } else if (plain && isMKey(event) && event.altKey && !event.shiftKey) {
+      handledKeys.add(event);
+      event.preventDefault(); event.stopImmediatePropagation();
+      toggleEffects();
+    } else if (event.code === 'Escape' && ui?.open && path.includes(ui.host)) {
+      handledKeys.add(event);
+      event.preventDefault(); event.stopImmediatePropagation();
+      panelOpen(false);
+    } else if (!path.includes(ui?.host) ||
+        (path.includes(ui?.$('#dock')) && !['Enter', 'Space'].includes(event.code))) {
       heldOutsideUI.add(event.code);
     }
   }
@@ -798,8 +1341,8 @@
   }
   function onBlur() { heldOutsideUI.clear(); heldMouseButtons.clear(); heldPointers.clear(); }
   function onVisibility() {
-    if (document.hidden) { cancelAnimationFrame(previewFrame); previewFrame = 0; }
-    else if (ui?.open && !previewFrame) previewFrame = requestAnimationFrame(preview);
+    if (document.hidden) stopSwatches();
+    else startSwatches();
   }
   function onFullscreen() {
     if (!ui) return;
@@ -809,9 +1352,12 @@
   }
   function dispose() {
     if (disposed) return;
-    disposed = true; saveNow(); clearInterval(adapterTimer); cancelAnimationFrame(previewFrame);
+    disposed = true; saveNow(); clearInterval(adapterTimer); stopSwatches(); clearTimeout(toastTimer);
     detachAdapter(); ui?.host.remove();
+    document.querySelectorAll('#mrp-lumen-local').forEach(node => node.remove());
+    ui = null;
     window.removeEventListener('keydown', onKey, true);
+    document.removeEventListener('keydown', onKey, true);
     window.removeEventListener('keyup', onKeyUp, true);
     for (const type of ['mousedown', 'pointerdown']) window.removeEventListener(type, onPointerPress, true);
     for (const type of ['mouseup', 'pointerup', 'pointercancel']) window.removeEventListener(type, onPointerRelease, true);
@@ -828,8 +1374,10 @@
     for (const [laser, state] of layers) if (performance.now() - state.lastSeen > 15000) { releaseLayer(state); layers.delete(laser); }
     updateStatus();
   }, 800);
-  Object.defineProperty(window, KEY, { configurable: true, value: Object.freeze({ dispose, version: '1.0.0' }) });
+  Object.defineProperty(window, KEY, { configurable: true, value: Object.freeze({ dispose, version: VERSION }) });
   window.addEventListener('keydown', onKey, true);
+  // Backup listener in case another script swallows the event before the window phase.
+  document.addEventListener('keydown', onKey, true);
   window.addEventListener('keyup', onKeyUp, true);
   for (const type of ['mousedown', 'pointerdown']) window.addEventListener(type, onPointerPress, true);
   for (const type of ['mouseup', 'pointerup', 'pointercancel']) window.addEventListener(type, onPointerRelease, true);
