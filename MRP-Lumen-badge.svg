@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="320" viewBox="0 0 160 160" role="img" aria-labelledby="title description">
+  <title id="title">MRP Lumen</title>
+  <desc id="description">Original personal emblem with a gold compass star, cyan arcs, and swept wings. Not an official Starblast badge.</desc>
+  <defs>
+    <linearGradient id="metal" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#fff1bf"/><stop offset=".5" stop-color="#dcb971"/><stop offset="1" stop-color="#997041"/>
+    </linearGradient>
+  </defs>
+  <path d="M80 10 126 35v59l-46 51-46-51V35Z" fill="#111b29" stroke="url(#metal)" stroke-width="3"/>
+  <path d="m80 21 35 20v49l-35 39-35-39V41Z" fill="none" stroke="#6dccdf" stroke-opacity=".5"/>
+  <path d="M33 62 7 47l8 27 18 12M127 62l26-15-8 27-18 12" fill="#253849" stroke="url(#metal)" stroke-width="2"/>
+  <path d="m80 32 7 21 22 7-22 7-7 21-7-21-22-7 22-7Z" fill="url(#metal)"/>
+  <circle cx="80" cy="60" r="7" fill="#d8fdff"/>
+  <path d="M51 78q29 23 58 0M57 85q23 20 46 0" fill="none" stroke="#6dccdf" stroke-width="2"/>
+  <path d="M37 96h86v25H37Z" fill="#111b29" stroke="url(#metal)"/>
+  <text x="80" y="114" text-anchor="middle" font-family="Verdana,sans-serif" font-size="18" font-weight="bold" letter-spacing="5" fill="#f3dfae">MRP</text>
+</svg>
